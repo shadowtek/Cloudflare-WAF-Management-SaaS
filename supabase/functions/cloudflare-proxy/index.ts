@@ -112,8 +112,7 @@ async function getSecuritySettings(zoneId: string, headers: HeadersInit): Promis
 
 async function getDNSRecords(zoneId: string, zoneName: string, headers: HeadersInit): Promise<DNSRecord[]> {
   try {
-    // Fetch both A and CNAME records
-    const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=A,CNAME`;
+    const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=A`;
     const response = await fetchWithRetry(url, { headers });
     const data: CloudflareResponse = await response.json();
 
@@ -270,64 +269,44 @@ async function applyRulesToZone(zoneId: string, headers: HeadersInit): Promise<b
     const rules = await getWAFRules();
     console.log(`Fetched ${rules.length} rules to apply to zone ${zoneId}`);
 
-    // Get the phase entrypoint URL
-    const phaseUrl = `https://api.cloudflare.com/client/v4/zones/${zoneId}/rulesets/phases/http_request_firewall_custom/entrypoint`;
+    // Ensure we have a ruleset to work with
+    const rulesetId = await createOrUpdateRuleset(zoneId, headers);
+    if (!rulesetId) {
+      throw new Error('Failed to create or get ruleset');
+    }
+
+    const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/rulesets/${rulesetId}`;
     
-    // First, try to update existing ruleset
-    const updateResponse = await fetchWithRetry(phaseUrl, {
+    const rulePayload = {
+      rules: rules.map((rule, index) => ({
+        ...rule,
+        enabled: true,
+        expression: rule.expression,
+        action: rule.action,
+        description: rule.description,
+        position: index + 1
+      }))
+    };
+
+    console.log(`Applying rules to zone ${zoneId}:`, JSON.stringify(rulePayload, null, 2));
+
+    const response = await fetchWithRetry(url, {
       method: 'PUT',
       headers: {
         ...headers,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        rules: rules.map((rule, index) => ({
-          ...rule,
-          enabled: true,
-          expression: rule.expression,
-          action: rule.action,
-          description: rule.description,
-          position: index + 1
-        }))
-      })
+      body: JSON.stringify(rulePayload)
     });
 
-    const updateData = await updateResponse.json();
+    const data = await response.json();
     
-    if (!updateData.success) {
-      // If update fails, try to create a new ruleset
-      const createResponse = await fetchWithRetry(
-        `https://api.cloudflare.com/client/v4/zones/${zoneId}/rulesets`,
-        {
-          method: 'POST',
-          headers: {
-            ...headers,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            name: 'WAFManager Pro Rules',
-            kind: 'zone',
-            phase: 'http_request_firewall_custom',
-            description: 'Custom WAF rules managed by WAFManager Pro',
-            rules: rules.map((rule, index) => ({
-              ...rule,
-              enabled: true,
-              expression: rule.expression,
-              action: rule.action,
-              description: rule.description,
-              position: index + 1
-            }))
-          })
-        }
-      );
-
-      const createData = await createResponse.json();
-      if (!createData.success) {
-        throw new Error('Failed to create and apply rules');
-      }
-      return true;
+    if (!data.success) {
+      console.error('Failed to apply rules:', data.errors);
+      throw new Error(data.errors?.[0]?.message || 'Failed to apply rules');
     }
 
+    console.log(`Successfully applied rules to zone ${zoneId}`);
     return true;
   } catch (error) {
     console.error('Error applying rules to zone:', error);

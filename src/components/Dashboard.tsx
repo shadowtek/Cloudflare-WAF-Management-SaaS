@@ -4,8 +4,6 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
-type WAFStatus = 'In Sync' | 'Out of Sync' | 'Error' | 'Inactive';
-
 interface CloudflareCredentials {
   id: string;
   name: string;
@@ -25,8 +23,11 @@ interface DNSRecord {
 interface Zone {
   id: string;
   name: string;
-  wafStatus: WAFStatus;
-  dnsRecords: DNSRecord[];
+  wafStatus: 'inactive' | 'active' | 'out-of-sync';
+  dnsRecords?: {
+    www: DNSRecord | null;
+    apex: DNSRecord | null;
+  };
 }
 
 interface PaginationInfo {
@@ -107,35 +108,38 @@ export default function Dashboard() {
   const [expandedRules, setExpandedRules] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'account' | 'rules' | 'zones'>('account');
 
-  const getStatusColor = (status: WAFStatus) => {
+  const getStatusColor = (status: Zone['wafStatus']) => {
     switch (status) {
-      case 'In Sync':
+      case 'active':
         return 'text-green-600';
-      case 'Out of Sync':
+      case 'out-of-sync':
         return 'text-yellow-600';
-      case 'Error':
-      case 'Inactive':
+      case 'inactive':
         return 'text-red-600';
-      default:
-        return 'text-gray-600';
     }
   };
 
-  const getStatusIcon = (status: WAFStatus) => {
+  const getStatusIcon = (status: Zone['wafStatus']) => {
     switch (status) {
-      case 'In Sync':
+      case 'active':
         return <CheckCircle className="h-5 w-5 mr-1" />;
-      case 'Out of Sync':
+      case 'out-of-sync':
         return <AlertTriangle className="h-5 w-5 mr-1" />;
-      case 'Error':
-      case 'Inactive':
-        return <XCircle className="h-5 w-5 mr-1" />;
-      default:
+      case 'inactive':
         return <XCircle className="h-5 w-5 mr-1" />;
     }
   };
 
-  const getStatusText = (status: WAFStatus) => status;
+  const getStatusText = (status: Zone['wafStatus']) => {
+    switch (status) {
+      case 'active':
+        return 'In Sync';
+      case 'out-of-sync':
+        return 'Out of Sync';
+      case 'inactive':
+        return 'Inactive';
+    }
+  };
 
   useEffect(() => {
     if (user) {
@@ -280,8 +284,8 @@ export default function Dashboard() {
         const newZones = data.result.map((zone: any) => ({
           id: zone.id,
           name: zone.name,
-          wafStatus: zone.wafStatus || 'Inactive',
-          dnsRecords: zone.dnsRecords || []
+          wafStatus: zone.wafStatus || 'inactive',
+          dnsRecords: zone.dnsRecords,
         }));
 
         setZones(newZones);
@@ -326,7 +330,7 @@ export default function Dashboard() {
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
       const newSelectedZones = zones
-        .filter(zone => zone.wafStatus !== 'In Sync')
+        .filter(zone => zone.wafStatus !== 'active')
         .map(zone => zone.id);
       setSelectedZones(newSelectedZones);
     } else {
@@ -380,7 +384,7 @@ export default function Dashboard() {
         setZones(prevZones => 
           prevZones.map(zone => 
             zoneIds.includes(zone.id) 
-              ? { ...zone, wafStatus: 'In Sync' as WAFStatus }
+              ? { ...zone, wafStatus: 'active' }
               : zone
           )
         );
@@ -435,7 +439,7 @@ export default function Dashboard() {
       setZones(prevZones => 
         prevZones.map(zone => 
           zone.id === zoneId 
-            ? { ...zone, wafStatus: 'In Sync' as WAFStatus }
+            ? { ...zone, wafStatus: 'active' }
             : zone
         )
       );
@@ -489,13 +493,14 @@ export default function Dashboard() {
 
       setZones(prevZones =>
         prevZones.map(zone => {
-          if (zone.id === zoneId) {
-            return {
-              ...zone,
-              dnsRecords: zone.dnsRecords.map(r =>
-                r.id === recordId ? { ...r, proxied: newProxiedState } : r
-              )
-            };
+          if (zone.id === zoneId && zone.dnsRecords) {
+            const updatedRecords = { ...zone.dnsRecords };
+            if (record.name.startsWith('www.')) {
+              updatedRecords.www = { ...record, proxied: newProxiedState };
+            } else {
+              updatedRecords.apex = { ...record, proxied: newProxiedState };
+            }
+            return { ...zone, dnsRecords: updatedRecords };
           }
           return zone;
         })
@@ -547,7 +552,7 @@ export default function Dashboard() {
       setZones(prevZones => 
         prevZones.map(zone => 
           zone.id === zoneId 
-            ? { ...zone, wafStatus: 'Inactive' as WAFStatus }
+            ? { ...zone, wafStatus: 'inactive' }
             : zone
         )
       );
@@ -572,71 +577,70 @@ export default function Dashboard() {
   };
 
   const renderDNSInfo = (zone: Zone) => {
-    if (!zone.dnsRecords?.length) return null;
-
-    // Find apex and www records, considering both A and CNAME types
-    const apexRecord = zone.dnsRecords.find(record => 
-      record.name === zone.name
-    );
-    
-    const wwwRecord = zone.dnsRecords.find(record => 
-      record.name === `www.${zone.name}`
-    );
+    if (!zone.dnsRecords?.apex) return null;
 
     return (
       <div className="flex items-center space-x-2">
-        {apexRecord && (
-          <div className="flex items-center space-x-2">
-            <div className="flex items-center text-gray-600">
-              <Server className="h-4 w-4 mr-1" />
-              <span className="text-sm font-mono">{apexRecord.content}</span>
-            </div>
+        <div className="flex items-center text-gray-600">
+          <Server className="h-4 w-4 mr-1" />
+          <span className="text-sm font-mono">{zone.dnsRecords.apex.content}</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          {zone.dnsRecords.apex && (
             <button
-              onClick={() => handleToggleProxy(zone.id, apexRecord.id, apexRecord, !apexRecord.proxied)}
+              onClick={() => handleToggleProxy(
+                zone.id,
+                zone.dnsRecords.apex.id,
+                zone.dnsRecords.apex,
+                !zone.dnsRecords.apex.proxied
+              )}
               disabled={processingZones.includes(zone.id)}
               className={`inline-flex items-center px-2 py-1 border text-xs font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 ${
-                apexRecord.proxied
+                zone.dnsRecords.apex.proxied
                   ? 'border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 focus:ring-orange-500'
                   : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50 focus:ring-gray-500'
               }`}
-              title={`Root Domain Proxy Status (${apexRecord.type})`}
+              title="Root Domain Proxy Status"
             >
-              {apexRecord.proxied ? (
+              {zone.dnsRecords.apex.proxied ? (
                 <Cloud className="h-4 w-4" />
               ) : (
                 <CloudOff className="h-4 w-4" />
               )}
             </button>
-          </div>
-        )}
-        {wwwRecord && (
-          <button
-            onClick={() => handleToggleProxy(zone.id, wwwRecord.id, wwwRecord, !wwwRecord.proxied)}
-            disabled={processingZones.includes(zone.id)}
-            className={`inline-flex items-center px-2 py-1 border text-xs font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 ${
-              wwwRecord.proxied
-                ? 'border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 focus:ring-orange-500'
-                : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50 focus:ring-gray-500'
-            }`}
-            title={`WWW Proxy Status (${wwwRecord.type})`}
-          >
-            WWW{' '}
-            {wwwRecord.proxied ? (
-              <Cloud className="h-4 w-4 ml-1" />
-            ) : (
-              <CloudOff className="h-4 w-4 ml-1" />
-            )}
-          </button>
-        )}
+          )}
+          {zone.dnsRecords.www && (
+            <button
+              onClick={() => handleToggleProxy(
+                zone.id,
+                zone.dnsRecords.www.id,
+                zone.dnsRecords.www,
+                !zone.dnsRecords.www.proxied
+              )}
+              disabled={processingZones.includes(zone.id)}
+              className={`inline-flex items-center px-2 py-1 border text-xs font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                zone.dnsRecords.www.proxied
+                  ? 'border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 focus:ring-orange-500'
+                  : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50 focus:ring-gray-500'
+              }`}
+              title="WWW Proxy Status"
+            >
+              WWW{' '}
+              {zone.dnsRecords.www.proxied ? (
+                <Cloud className="h-4 w-4 ml-1" />
+              ) : (
+                <CloudOff className="h-4 w-4 ml-1" />
+              )}
+            </button>
+          )}
+        </div>
       </div>
     );
   };
 
-  const isZoneSelectable = (zone: Zone) => zone.wafStatus !== 'In Sync';
-  const selectableZonesCount = zones.filter(zone => zone.wafStatus !== 'In Sync').length;
-  const allSelectableZonesSelected = selectableZonesCount > 0 && selectedZones.length === selectableZonesCount;
-
   const totalPages = Math.ceil(pagination.totalCount / pagination.perPage);
+  const selectableZonesCount = zones.filter(zone => zone.wafStatus !== 'active').length;
+  const allSelectableZonesSelected = selectableZonesCount > 0 && selectedZones.length === selectableZonesCount;
 
   return (
     <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
@@ -922,7 +926,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Zones Section */}
+        {/* Zones Section - Now appears below in both mobile and desktop */}
         {zones.length > 0 && (
           <div 
             className={`${
@@ -968,7 +972,7 @@ export default function Dashboard() {
                           className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                           checked={selectedZones.includes(zone.id)}
                           onChange={() => handleZoneSelection(zone.id)}
-                          disabled={!isZoneSelectable(zone)}
+                          disabled={zone.wafStatus === 'active'}
                         />
                         <span className="ml-3 text-sm font-medium text-gray-900">
                           {zone.name}
@@ -981,7 +985,7 @@ export default function Dashboard() {
                           {getStatusIcon(zone.wafStatus)}
                           <span className="text-sm">{getStatusText(zone.wafStatus)}</span>
                         </div>
-                        {zone.wafStatus === 'In Sync' ? (
+                        {zone.wafStatus === 'active' ? (
                           <button
                             onClick={() => handleDisableWAF(zone.id)}
                             disabled={processingZones.includes(zone.id)}
@@ -996,15 +1000,15 @@ export default function Dashboard() {
                               </>
                             )}
                           </button>
-                        ) : (
+                        ) : zone.wafStatus !== 'active' && (
                           <button
-                            onClick={() => zone.wafStatus === 'Out of Sync' ? handleResyncRules(zone.id) : handleApplyRules([zone.id])}
+                            onClick={() => zone.wafStatus === 'out-of-sync' ? handleResyncRules(zone.id) : handleApplyRules([zone.id])}
                             disabled={processingZones.includes(zone.id)}
                             className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
                           >
                             {processingZones.includes(zone.id) ? (
                               <Loader2 className="animate-spin h-4 w-4 mr-1" />
-                            ) : zone.wafStatus === 'Out of Sync' ? (
+                            ) : zone.wafStatus === 'out-of-sync' ? (
                               'Resync Rules'
                             ) : (
                               'Apply Rules'
@@ -1014,7 +1018,57 @@ export default function Dashboard() {
                       </div>
                       {zone.dnsRecords && (
                         <div className="space-y-2 mt-2 pt-2 border-t">
-                          {renderDNSInfo(zone)}
+                          {zone.dnsRecords.apex && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm text-gray-600">Root Domain</span>
+                              <button
+                                onClick={() => handleToggleProxy(
+                                  zone.id,
+                                  zone.dnsRecords.apex.id,
+                                  zone.dnsRecords.apex,
+                                  !zone.dnsRecords.apex.proxied
+                                )}
+                                disabled={processingZones.includes(zone.id)}
+                                className={`inline-flex items-center px-2 py-1 border text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                                  zone.dnsRecords.apex.proxied
+                                    ? 'border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 focus:ring-orange-500'
+                                    : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50 focus:ring-gray-500'
+                                }`}
+                              >
+                                {zone.dnsRecords.apex.proxied ? (
+                                  <Cloud className="h-4 w-4" />
+                                ) : (
+                                  <CloudOff className="h-4 w-4" />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                          {zone.dnsRecords.www && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm text-gray-600">WWW</span>
+                              <button
+                                onClick={() => handleToggleProxy(
+                                  zone.id,
+                                  zone.dnsRecords.www.id,
+                                  zone.dnsRecords.www,
+                                  !zone.dnsRecords.www.proxied
+                                )}
+                                disabled={processingZones.includes(zone.id)}
+                                className={`inline-flex items-center px-2 py-1 border text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                                  zone.dnsRecords.www.proxied
+                                    ? 'border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 focus:ring-orange-500'
+                                    : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50 focus:ring-gray-500'
+                                }`}
+                              >
+                                WWW{' '}
+                                {zone.dnsRecords.www.proxied ? (
+                                  <Cloud className="h-4 w-4 ml-1" />
+                                ) : (
+                                  <CloudOff className="h-4 w-4 ml-1" />
+                                )}
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1064,7 +1118,7 @@ export default function Dashboard() {
                               className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                               checked={selectedZones.includes(zone.id)}
                               onChange={() => handleZoneSelection(zone.id)}
-                              disabled={!isZoneSelectable(zone)}
+                              disabled={zone.wafStatus === 'active'}
                             />
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -1080,7 +1134,7 @@ export default function Dashboard() {
                             {renderDNSInfo(zone)}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            {zone.wafStatus === 'In Sync' ? (
+                            {zone.wafStatus === 'active' ? (
                               <button
                                 onClick={() => handleDisableWAF(zone.id)}
                                 disabled={processingZones.includes(zone.id)}
@@ -1095,15 +1149,15 @@ export default function Dashboard() {
                                   </>
                                 )}
                               </button>
-                            ) : (
+                            ) : zone.wafStatus !== 'active' && (
                               <button
-                                onClick={() => zone.wafStatus === 'Out of Sync' ? handleResyncRules(zone.id) : handleApplyRules([zone.id])}
+                                onClick={() => zone.wafStatus === 'out-of-sync' ? handleResyncRules(zone.id) : handleApplyRules([zone.id])}
                                 disabled={processingZones.includes(zone.id)}
                                 className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
                               >
                                 {processingZones.includes(zone.id) ? (
                                   <Loader2 className="animate-spin h-4 w-4 mr-1" />
-                                ) : zone.wafStatus === 'Out of Sync' ? (
+                                ) : zone.wafStatus === 'out-of-sync' ? (
                                   'Resync Rules'
                                 ) : (
                                   'Apply Rules'

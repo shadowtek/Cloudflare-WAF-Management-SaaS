@@ -43,38 +43,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const checkMFAStatus = async (user: User) => {
     try {
-      // First check if a record exists
-      const { data: existingData, error: checkError } = await supabase
+      const { data, error } = await supabase
         .from('user_mfa')
         .select('enabled')
         .eq('user_id', user.id)
         .maybeSingle();
 
-      if (checkError) {
-        console.error('Error checking MFA status:', checkError);
+      if (error) {
+        console.error('Error checking MFA status:', error);
         setIsEmailMFAEnabled(false);
         return;
       }
 
-      // If no record exists, create one with default values
-      if (!existingData) {
-        const { error: insertError } = await supabase
-          .from('user_mfa')
-          .insert({
-            user_id: user.id,
-            enabled: false
-          });
-
-        if (insertError) {
-          console.error('Error creating MFA record:', insertError);
-          setIsEmailMFAEnabled(false);
-          return;
-        }
-
-        setIsEmailMFAEnabled(false);
-      } else {
-        setIsEmailMFAEnabled(existingData.enabled ?? false);
-      }
+      // If no record exists, MFA is not enabled
+      setIsEmailMFAEnabled(data?.enabled ?? false);
     } catch (error) {
       console.error('Error checking MFA status:', error);
       setIsEmailMFAEnabled(false);
